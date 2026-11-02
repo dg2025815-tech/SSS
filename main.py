@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,7 +8,11 @@ from sklearn.metrics import silhouette_score
 import plotly.express as px
 
 # 1. 페이지 설정 및 제목
-st.set_page_config(page_title="수면 패턴과 인지 피로도 분석", layout="wide")
+st.set_page_config(
+    page_title="수면 패턴과 인지 피로도 분석",
+    page_icon="💤",
+    layout="wide"
+)
 
 st.title("💤 수면 시간대별 군집화 분석과 인지 피로도(`Stress Level`) 관계 연구")
 st.markdown("""
@@ -15,17 +20,30 @@ st.markdown("""
 **데이터 기반 군집(K-Means)**을 형성하고, 군집 간 인지 피로도(`Stress Level`)의 차이를 검증합니다.
 """)
 
-# 2. 데이터 로드 및 전처리 함수
+# 2. 데이터 로드 및 전처리 (경로 오류 방지 예외 처리 추가)
 @st.cache_data
 def load_and_preprocess_data():
-    # 데이터셋 읽기 (파일 경로에 맞춰 수정 가능)
-    try:
-        df = pd.read_csv("data/Sleep_health_and_lifestyle_dataset.csv")
-    except FileNotFoundError:
-        # 경로 차이를 대비한 예비 로드 logic
-        df = pd.read_csv("Sleep_health_and_lifestyle_dataset.csv")
+    # 파일 탐색 가능 경로 목록
+    possible_paths = [
+        "data/Sleep_health_and_lifestyle_dataset.csv",
+        "Sleep_health_and_lifestyle_dataset.csv",
+        "../data/Sleep_health_and_lifestyle_dataset.csv",
+        "../Sleep_health_and_lifestyle_dataset.csv"
+    ]
     
-    # [전처리] Sleep Disorder의 219개 결측치는 '정상 수면'을 의미하므로 'None'으로 대체
+    file_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            file_path = path
+            break
+            
+    if file_path is None:
+        st.error("❌ 데이터 파일을 찾을 수 없습니다. `data/Sleep_health_and_lifestyle_dataset.csv` 파일 위치를 확인해 주세요.")
+        st.stop()
+        
+    df = pd.read_csv(file_path)
+    
+    # [전처리] Sleep Disorder 결측치는 '정상 수면'을 의미하므로 'None'으로 대체
     df['Sleep Disorder'] = df['Sleep Disorder'].fillna('None')
     
     # K-Means 군집화를 위한 입력 변수 선정 및 Min-Max 정규화
@@ -49,9 +67,10 @@ def load_and_preprocess_data():
     # 실루엣 계수 계산
     sil_score = silhouette_score(scaled_features, df['Cluster'])
     
-    return df, sil_score, kmeans, scaler
+    return df, sil_score
 
-df, sil_score, kmeans, scaler = load_and_preprocess_data()
+# 데이터 로드 실행
+df, sil_score = load_and_preprocess_data()
 
 # 3. 사이드바 - 주요 요약 지표
 st.sidebar.header("📊 분석 데이터 요약")
@@ -63,7 +82,7 @@ tab1, tab2, tab3 = st.tabs(["📌 데이터 전처리 & 군집화", "📈 군집
 
 with tab1:
     st.subheader("1. K-Means 군집화 결과 (K=3)")
-    st.markdown(f"**실루엣 계수**: `{sil_score:.3f}` (0.6 이상으로 군집 간 경계가 매우 명확함)")
+    st.markdown(f"**실루엣 계수**: `{sil_score:.3f}` (0.6 이상으로 군집 간 경계가 명확함)")
     
     # 군집별 주요 수치 요약 표
     cluster_summary = df.groupby('Cluster_Name').agg(
@@ -73,12 +92,15 @@ with tab1:
         인원수=('Person ID', 'count')
     ).reset_index()
     
-    st.dataframe(cluster_summary.style.format({
-        '수면시간_평균': '{:.2f}시간',
-        '수면의질_평균': '{:.2f}점',
-        '스트레스_평균': '{:.2f}점',
-        '인원수': '{:d}명'
-    }), use_container_width=True)
+    st.dataframe(
+        cluster_summary.style.format({
+            '수면시간_평균': '{:.2f}시간',
+            '수면의질_평균': '{:.2f}점',
+            '스트레스_평균': '{:.2f}점',
+            '인원수': '{:d}명'
+        }),
+        use_container_width=True
+    )
     
     # 군집화 산점도 시각화
     fig_cluster = px.scatter(
@@ -111,7 +133,7 @@ with tab2:
     ### 💡 주요 분석 결과
     * **단수면 군집**: 평균 수면 시간이 가장 적으며, **스트레스 지수가 가장 높게 형성**됨.
     * **중/장수면 군집**: 수면 시간과 수면의 질이 높아질수록 **스트레스 지수가 계단식으로 유의미하게 감소**함.
-    * **결측치 처리 효과**: 219개의 `Sleep Disorder` 결측치를 'None(정상)'으로 채워 넣음으로써 정상 수면군이 중/장수면 군집으로 올바르게 분리됨.
+    * **결측치 처리 효과**: `Sleep Disorder` 결측치를 'None(정상)'으로 채워 넣음으로써 정상 수면군이 중/장수면 군집으로 올바르게 분리됨.
     """)
 
 with tab3:
@@ -124,4 +146,7 @@ with tab3:
     )
     
     filtered_df = df[df['Cluster_Name'].isin(selected_cluster)]
-    st.dataframe(filtered_df[['Person ID', 'Gender', 'Age', 'Sleep Duration', 'Quality of Sleep', 'Stress Level', 'Sleep Disorder', 'Cluster_Name']], use_container_width=True)
+    st.dataframe(
+        filtered_df[['Person ID', 'Gender', 'Age', 'Sleep Duration', 'Quality of Sleep', 'Stress Level', 'Sleep Disorder', 'Cluster_Name']], 
+        use_container_width=True
+    )
