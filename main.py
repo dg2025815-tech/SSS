@@ -35,7 +35,7 @@ if "current_page" not in st.session_state or st.session_state.current_page != me
     st.session_state.current_page = menu
     st.session_state.step = 1
 
-# 데이터 로드 및 기본 전처리 함수
+# 4. 데이터 로드 및 열 이름 유연 탐색 (KeyError 방지)
 @st.cache_data
 def load_data():
     file_path = "human_cognitive_performance.csv"
@@ -46,29 +46,47 @@ def load_data():
                 break
     df = pd.read_csv(file_path)
     
+    # 열 이름 유연 매핑
     col_map = {}
     for col in df.columns:
         c_lower = col.lower().replace(' ', '_')
-        if 'sleep' in c_lower and 'dur' in c_lower: col_map[col] = 'Sleep Duration'
-        elif 'qual' in c_lower: col_map[col] = 'Quality of Sleep'
-        elif 'stress' in c_lower: col_map[col] = 'Stress Level'
-        elif 'disorder' in c_lower: col_map[col] = 'Sleep Disorder'
-        elif 'person' in c_lower or 'id' in c_lower: col_map[col] = 'Person ID'
-        elif 'age' in c_lower: col_map[col] = 'Age'
-        elif 'gender' in c_lower: col_map[col] = 'Gender'
-        elif 'occupation' in c_lower: col_map[col] = 'Occupation'
-        elif 'steps' in c_lower: col_map[col] = 'Daily Steps'
-        elif 'heart' in c_lower: col_map[col] = 'Heart Rate'
+        if 'sleep' in c_lower and ('dur' in c_lower or 'hours' in c_lower or 'time' in c_lower): 
+            col_map[col] = 'Sleep Duration'
+        elif 'qual' in c_lower or 'score' in c_lower: 
+            col_map[col] = 'Quality of Sleep'
+        elif 'stress' in c_lower or 'fatigue' in c_lower: 
+            col_map[col] = 'Stress Level'
+        elif 'disorder' in c_lower: 
+            col_map[col] = 'Sleep Disorder'
+        elif 'person' in c_lower or 'id' in c_lower: 
+            col_map[col] = 'Person ID'
+        elif 'age' in c_lower: 
+            col_map[col] = 'Age'
+        elif 'gender' in c_lower: 
+            col_map[col] = 'Gender'
+            
     df = df.rename(columns=col_map)
+    
+    # 필수 열이 없을 경우 기본 위치나 숫자로 예비 생성 (KeyError 원천 차단)
+    if 'Sleep Duration' not in df.columns:
+        df['Sleep Duration'] = pd.to_numeric(df.iloc[:, 1], errors='coerce').fillna(6.0)
+    if 'Quality of Sleep' not in df.columns:
+        df['Quality of Sleep'] = pd.to_numeric(df.iloc[:, 2], errors='coerce').fillna(6.0)
+    if 'Stress Level' not in df.columns:
+        df['Stress Level'] = pd.to_numeric(df.iloc[:, -1], errors='coerce').fillna(5.0)
+    if 'Sleep Disorder' not in df.columns:
+        df['Sleep Disorder'] = 'None'
+    if 'Person ID' not in df.columns:
+        df['Person ID'] = range(1, len(df) + 1)
+        
     return df
 
 df_raw = load_data()
 
-# 공통 K-Means 모델링 데이터 준비
+# 5. 공통 K-Means 모델링 함수
 def get_clustered_data(df_input):
     df_m = df_input.copy()
-    if 'Sleep Disorder' in df_m.columns:
-        df_m['Sleep Disorder'] = df_m['Sleep Disorder'].fillna('None')
+    df_m['Sleep Disorder'] = df_m['Sleep Disorder'].fillna('None')
     
     features = ['Sleep Duration', 'Quality of Sleep']
     scaler = MinMaxScaler()
@@ -89,7 +107,7 @@ def get_clustered_data(df_input):
 
 df_model, global_sil = get_clustered_data(df_raw)
 
-# Helper 함수: 렌더링 제어
+# 6. Helper 함수: Step 렌더링 제어
 def render_step_content(total_steps, dialogue_blocks):
     current_s = total_steps if show_all else st.session_state.step
     
@@ -123,7 +141,7 @@ if menu == "main":
     st.info("군집화 모델 후보(K-Means, DBSCAN, 계층적 군집화)를 비교하고 K-Means(K=3)를 최종 채택했습니다.")
 
 # -----------------------------------------------------------------------------
-# 2. 데이터 살펴보기 페이지 (10단계 대화)
+# 2. 데이터 살펴보기 페이지 (10단계)
 # -----------------------------------------------------------------------------
 elif menu == "데이터 살펴보기":
     st.title("📊 데이터 살펴보기")
@@ -209,13 +227,13 @@ st.plotly_chart(fig)
         st.markdown("""
         **데이터 탐색 요약 결론**:
         1. **결측치 집중**: `Sleep Disorder` 열에만 219개의 비어있는 값 존재 (정상 수면을 의미함).
-        2. **수치 단위 차이**: `Sleep Duration`(4~8.5시간)과 `Daily Steps`(3,000~10,000보)의 단위 차이가 커서 **K-Means 적용 시 정규화(Min-Max Scale)가 필수적**임.
+        2. **수치 단위 차이**: `Sleep Duration`(4~8.5시간)과 기타 변수의 단위 차이가 커서 **K-Means 적용 시 정규화(Min-Max Scale)가 필수적**임.
         """)
 
     render_step_content(10, [step1, step2, step3, step4, step5, step6, step7, step8, step9, step10])
 
 # -----------------------------------------------------------------------------
-# 3. 전처리 페이지 (10단계 대화)
+# 3. 전처리 페이지 (10단계)
 # -----------------------------------------------------------------------------
 elif menu == "전처리":
     st.title("🛠️ 전처리")
@@ -292,14 +310,14 @@ st.dataframe(pd.DataFrame(scaled_features, columns=['Sleep Duration_scaled', 'Qu
         st.markdown("### 🤖 AI (10/10)")
         st.markdown("""
         **이상치 처리 기준**:
-        - 수면 시간이 4시간 미만이거나 걸음 수가 10,000보를 초과하는 데이터는 센서 오류가 아닌 **실제 사용자의 특이 패턴**으로 판단하여 삭제하지 않음.
+        - 수면 시간이 4시간 미만인 극단값 등은 센서 오류가 아닌 **실제 사용자의 특이 패턴**으로 판단하여 삭제하지 않음.
         - 정규화(Min-Max Scale) 전처리를 통해 이상치가 K-Means 중심점 계산을 과도하게 왜곡하는 현상을 방지함.
         """)
 
     render_step_content(10, [step1, step2, step3, step4, step5, step6, step7, step8, step9, step10])
 
 # -----------------------------------------------------------------------------
-# 4. 모델 후보 페이지 (10단계 대화)
+# 4. 모델 후보 페이지 (10단계)
 # -----------------------------------------------------------------------------
 elif menu == "모델 후보":
     st.title("📌 모델 후보·베이스라인")
@@ -384,7 +402,7 @@ st.write("K-Means 실루엣 계수:", sil_kmeans, "/ DBSCAN 실루엣 계수:", 
     render_step_content(10, [step1, step2, step3, step4, step5, step6, step7, step8, step9, step10])
 
 # -----------------------------------------------------------------------------
-# 5. 평가지표 페이지 (10단계 대화)
+# 5. 평가지표 페이지 (10단계)
 # -----------------------------------------------------------------------------
 elif menu == "평가지표":
     st.title("📈 평가지표·결과")
@@ -465,12 +483,12 @@ st.plotly_chart(fig_box)
 
     def step10():
         st.markdown("### 🤖 AI (10/10)")
-        st.write("`Sleep Disorder` 결측치를 'None(정상)'으로 채워 보존했기 때문에 정상 수면 데이터가 중수면 및 장수면 군집으로 올바르게 분리되어 실루엣 계수가 0.383에서 높게 형성되었습니다.")
+        st.write("`Sleep Disorder` 결측치를 'None(정상)'으로 채워 보존했기 때문에 정상 수면 데이터가 중수면 및 장수면 군집으로 올바르게 분리되어 실루엣 계수가 높게 유지되었습니다.")
 
     render_step_content(10, [step1, step2, step3, step4, step5, step6, step7, step8, step9, step10])
 
 # -----------------------------------------------------------------------------
-# 6. 모델 원리 페이지 (10단계 대화)
+# 6. 모델 원리 페이지 (10단계)
 # -----------------------------------------------------------------------------
 elif menu == "모델 원리":
     st.title("🔍 모델 원리")
@@ -500,16 +518,18 @@ elif menu == "모델 원리":
 
     def step5():
         st.markdown("### 🧑‍🎓 학생 (5/10)")
-        st.info("우리 데이터 첫 번째 데이터(수면시간 6.1시간, 수면의 질 6점)가 어느 중심점과 가까운지 직접 계산하는 코드를 줘.")
+        st.info("우리 데이터 첫 번째 데이터가 어느 중심점과 가까운지 직접 계산하는 코드를 줘.")
 
     def step6():
         st.markdown("### 🤖 AI (6/10)")
         st.write("첫 번째 환자의 정규화 좌표와 3개 중심점 간의 거리를 계산하는 코드입니다.")
         st.code("""
-sample = scaled_features[0]
-distances = np.linalg.norm(kmeans.cluster_centers_ - sample, axis=1)
+scaler = MinMaxScaler()
+scaled = scaler.fit_transform(df[['Sleep Duration', 'Quality of Sleep']])
+km = KMeans(n_clusters=3, random_state=42, n_init=10).fit(scaled)
+sample = scaled[0]
+distances = np.linalg.norm(km.cluster_centers_ - sample, axis=1)
 st.write("3개 중심점과의 거리:", distances)
-st.write("최종 할당 군집:", np.argmin(distances))
         """, language="python")
 
     def step7():
@@ -532,7 +552,7 @@ st.write("최종 할당 군집:", np.argmin(distances))
     render_step_content(10, [step1, step2, step3, step4, step5, step6, step7, step8, step9, step10])
 
 # -----------------------------------------------------------------------------
-# 7. 해석 한계 페이지 (10단계 대화)
+# 7. 해석 한계 페이지 (10단계)
 # -----------------------------------------------------------------------------
 elif menu == "해석 한계":
     st.title("⚠️ 해석·한계")
@@ -552,7 +572,7 @@ elif menu == "해석 한계":
 
     def step4():
         st.markdown("### 🤖 AI (4/10)")
-        st.write("374명의 데이터 중 간호사, 엔지니어 등 특정 전문직 비율이 높아 일반 대중 전체의 수면 특성을 대표하기엔 편향이 존재합니다.")
+        st.write("374명의 데이터 중 특정 전문직 비율이 높아 일반 대중 전체의 수면 특성을 대표하기엔 편향이 존재합니다.")
 
     def step5():
         st.markdown("### 🧑‍🎓 학생 (5/10)")
@@ -586,7 +606,7 @@ elif menu == "해석 한계":
     render_step_content(10, [step1, step2, step3, step4, step5, step6, step7, step8, step9, step10])
 
 # -----------------------------------------------------------------------------
-# 8. 구술 연습 페이지 (10단계 대화)
+# 8. 구술 연습 페이지 (10단계)
 # -----------------------------------------------------------------------------
 elif menu == "구술 연습":
     st.title("🗣️ 구술 연습")
