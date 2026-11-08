@@ -13,9 +13,10 @@ st.set_page_config(page_title="수면 패턴과 인지 피로도 분석", page_i
 st.title("💤 수면 시간대별 군집화 분석과 인지 피로도(`Stress Level`) 관계 연구")
 st.markdown("본 연구는 수면 시간대 및 수면의 질에 따른 **데이터 기반 군집(K-Means 등)**을 형성하고 인지 피로도와의 관계를 검증합니다.")
 
-# 2. 데이터 로드 및 결측치 완벽 처리 함수
+# 2. 데이터 로드 및 결측치/열 이름 완전 자동 처리 (에러 방어)
 @st.cache_data
 def load_and_preprocess_data():
+    # 파일 탐색
     file_path = "human_cognitive_performance.csv"
     if not os.path.exists(file_path):
         for f in os.listdir('.'):
@@ -26,69 +27,73 @@ def load_and_preprocess_data():
     df = pd.read_csv(file_path)
     df = df.loc[:, ~df.columns.duplicated()]
     
-    # 열 이름 유연 탐색
-    sleep_dur_col = None
-    sleep_qual_col = None
-    stress_col = None
-    disorder_col = None
-    
+    # 1) 열 이름 찾기
+    sleep_dur_col, sleep_qual_col, stress_col, disorder_col = None, None, None, None
     for col in df.columns:
-        c = col.lower().replace(' ', '_')
-        if not sleep_dur_col and 'sleep' in c and ('dur' in c or 'hours' in c or 'time' in c):
+        c = str(col).lower().replace(' ', '_')
+        if not sleep_dur_col and ('sleep' in c and ('dur' in c or 'hour' in c or 'time' in c)):
             sleep_dur_col = col
         elif not sleep_qual_col and ('qual' in c or 'score' in c):
             sleep_qual_col = col
-        elif not stress_col and ('stress' in c or 'fatigue' in c):
+        elif not stress_col and ('stress' in c or 'fatigue' in c or 'level' in c):
             stress_col = col
         elif not disorder_col and 'disorder' in c:
             disorder_col = col
 
     new_df = pd.DataFrame()
     
-    # 수치형 안전 변환 및 결측치(NaN) 중앙값/평균 대체 (NaN 원천 차단)
+    # 2) 수치형 데이터 안전 추출 (실패 시 위치 기반 추출)
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    
     if sleep_dur_col:
         new_df['Sleep Duration'] = pd.to_numeric(df[sleep_dur_col], errors='coerce')
+    elif len(numeric_cols) > 0:
+        new_df['Sleep Duration'] = pd.to_numeric(df[numeric_cols[0]], errors='coerce')
     else:
-        new_df['Sleep Duration'] = pd.to_numeric(df.iloc[:, 1], errors='coerce')
-        
+        new_df['Sleep Duration'] = 7.0
+
     if sleep_qual_col:
         new_df['Quality of Sleep'] = pd.to_numeric(df[sleep_qual_col], errors='coerce')
+    elif len(numeric_cols) > 1:
+        new_df['Quality of Sleep'] = pd.to_numeric(df[numeric_cols[1]], errors='coerce')
     else:
-        new_df['Quality of Sleep'] = pd.to_numeric(df.iloc[:, 2], errors='coerce')
-        
+        new_df['Quality of Sleep'] = 6.0
+
     if stress_col:
         new_df['Stress Level'] = pd.to_numeric(df[stress_col], errors='coerce')
+    elif len(numeric_cols) > 2:
+        new_df['Stress Level'] = pd.to_numeric(df[numeric_cols[2]], errors='coerce')
     else:
         new_df['Stress Level'] = pd.to_numeric(df.iloc[:, -1], errors='coerce')
 
     if disorder_col:
-        new_df['Sleep Disorder'] = df[disorder_col].fillna('None')
+        new_df['Sleep Disorder'] = df[disorder_col].fillna('None').astype(str)
     else:
         new_df['Sleep Disorder'] = 'None'
 
-    # NaN 값 보완 처리
-    new_df['Sleep Duration'] = new_df['Sleep Duration'].fillna(new_df['Sleep Duration'].median()).fillna(6.0)
+    # 3) 결측치(NaN) 원천 제거 (중앙값 및 기본값 채우기)
+    new_df['Sleep Duration'] = new_df['Sleep Duration'].fillna(new_df['Sleep Duration'].median()).fillna(7.0)
     new_df['Quality of Sleep'] = new_df['Quality of Sleep'].fillna(new_df['Quality of Sleep'].median()).fillna(6.0)
     new_df['Stress Level'] = new_df['Stress Level'].fillna(new_df['Stress Level'].median()).fillna(5.0)
     new_df['Person ID'] = range(1, len(new_df) + 1)
     
-    # 스케일링 (NaN 없는 데이터 보장)
-    features = ['Sleep Duration', 'Quality of Sleep']
+    # 4) MinMaxScaler 변환 (NumPy 배열로 안전하게 넘김)
+    X = new_df[['Sleep Duration', 'Quality of Sleep']].values
     scaler = MinMaxScaler()
-    scaled_features = scaler.fit_transform(new_df[features].values)
+    scaled_features = scaler.fit_transform(X)
     
-    # 후보 모델 3개 비교 평가
-    # 1. K-Means (K=3, 고정 난수 random_state=42)
+    # 5) 후보 모델 3개 비교 평가
+    # K-Means (K=3, fixed seed)
     kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
     new_df['Cluster'] = kmeans.fit_predict(scaled_features)
     sil_kmeans = silhouette_score(scaled_features, new_df['Cluster'])
     
-    # 2. DBSCAN
+    # DBSCAN
     dbscan = DBSCAN(eps=0.15, min_samples=5)
     db_labels = dbscan.fit_predict(scaled_features)
     sil_dbscan = silhouette_score(scaled_features, db_labels) if len(set(db_labels)) > 1 else -1.0
     
-    # 3. 계층적 군집화 (Agglomerative)
+    # 계층적 군집화 (Agglomerative)
     agg = AgglomerativeClustering(n_clusters=3)
     agg_labels = agg.fit_predict(scaled_features)
     sil_agg = silhouette_score(scaled_features, agg_labels)
@@ -112,7 +117,7 @@ def load_and_preprocess_data():
     
     return new_df, sil_kmeans, metrics_df, kmeans, scaler
 
-# 3. UI 렌더링
+# 3. UI 출력
 try:
     df, sil_score, metrics_df, kmeans_model, scaler_model = load_and_preprocess_data()
 
