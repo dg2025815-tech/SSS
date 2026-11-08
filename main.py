@@ -13,7 +13,7 @@ st.set_page_config(page_title="수면 패턴과 인지 피로도 분석", page_i
 st.title("💤 수면 시간대별 군집화 분석과 인지 피로도(`Stress Level`) 관계 연구")
 st.markdown("본 연구는 수면 시간대 및 수면의 질에 따른 **데이터 기반 군집(K-Means 등)**을 형성하고 인지 피로도와의 관계를 검증합니다.")
 
-# 2. 데이터 로드 및 전처리
+# 2. 데이터 로드 및 결측치 완벽 처리 함수
 @st.cache_data
 def load_and_preprocess_data():
     file_path = "human_cognitive_performance.csv"
@@ -26,38 +26,64 @@ def load_and_preprocess_data():
     df = pd.read_csv(file_path)
     df = df.loc[:, ~df.columns.duplicated()]
     
-    # 열 이름 매핑
-    sleep_dur_col = next((c for c in df.columns if 'sleep' in c.lower() and 'dur' in c.lower()), df.columns[1])
-    sleep_qual_col = next((c for c in df.columns if 'qual' in c.lower()), df.columns[2])
-    stress_col = next((c for c in df.columns if 'stress' in c.lower()), df.columns[-1])
-    disorder_col = next((c for c in df.columns if 'disorder' in c.lower()), None)
+    # 열 이름 유연 탐색
+    sleep_dur_col = None
+    sleep_qual_col = None
+    stress_col = None
+    disorder_col = None
     
-    df['Sleep Duration'] = pd.to_numeric(df[sleep_dur_col], errors='coerce')
-    df['Quality of Sleep'] = pd.to_numeric(df[sleep_qual_col], errors='coerce')
-    df['Stress Level'] = pd.to_numeric(df[stress_col], errors='coerce')
+    for col in df.columns:
+        c = col.lower().replace(' ', '_')
+        if not sleep_dur_col and 'sleep' in c and ('dur' in c or 'hours' in c or 'time' in c):
+            sleep_dur_col = col
+        elif not sleep_qual_col and ('qual' in c or 'score' in c):
+            sleep_qual_col = col
+        elif not stress_col and ('stress' in c or 'fatigue' in c):
+            stress_col = col
+        elif not disorder_col and 'disorder' in c:
+            disorder_col = col
+
+    new_df = pd.DataFrame()
     
-    # 결측치 보존 처리 (Sleep Disorder는 None으로 대체, 수치 변수는 평균 대체)
-    if disorder_col:
-        df['Sleep Disorder'] = df[disorder_col].fillna('None')
+    # 수치형 안전 변환 및 결측치(NaN) 중앙값/평균 대체 (NaN 원천 차단)
+    if sleep_dur_col:
+        new_df['Sleep Duration'] = pd.to_numeric(df[sleep_dur_col], errors='coerce')
     else:
-        df['Sleep Disorder'] = 'None'
+        new_df['Sleep Duration'] = pd.to_numeric(df.iloc[:, 1], errors='coerce')
         
-    df['Sleep Duration'] = df['Sleep Duration'].fillna(df['Sleep Duration'].mean())
-    df['Quality of Sleep'] = df['Quality of Sleep'].fillna(df['Quality of Sleep'].mean())
-    df['Stress Level'] = df['Stress Level'].fillna(df['Stress Level'].mean())
+    if sleep_qual_col:
+        new_df['Quality of Sleep'] = pd.to_numeric(df[sleep_qual_col], errors='coerce')
+    else:
+        new_df['Quality of Sleep'] = pd.to_numeric(df.iloc[:, 2], errors='coerce')
+        
+    if stress_col:
+        new_df['Stress Level'] = pd.to_numeric(df[stress_col], errors='coerce')
+    else:
+        new_df['Stress Level'] = pd.to_numeric(df.iloc[:, -1], errors='coerce')
+
+    if disorder_col:
+        new_df['Sleep Disorder'] = df[disorder_col].fillna('None')
+    else:
+        new_df['Sleep Disorder'] = 'None'
+
+    # NaN 값 보완 처리
+    new_df['Sleep Duration'] = new_df['Sleep Duration'].fillna(new_df['Sleep Duration'].median()).fillna(6.0)
+    new_df['Quality of Sleep'] = new_df['Quality of Sleep'].fillna(new_df['Quality of Sleep'].median()).fillna(6.0)
+    new_df['Stress Level'] = new_df['Stress Level'].fillna(new_df['Stress Level'].median()).fillna(5.0)
+    new_df['Person ID'] = range(1, len(new_df) + 1)
     
-    # 스케일링 (동일 변수, 동일 스케일러 적용)
+    # 스케일링 (NaN 없는 데이터 보장)
     features = ['Sleep Duration', 'Quality of Sleep']
     scaler = MinMaxScaler()
-    scaled_features = scaler.fit_transform(df[features].values)
+    scaled_features = scaler.fit_transform(new_df[features].values)
     
-    # 후보 모델 3개 비교 평가 (같은 변수 조건)
+    # 후보 모델 3개 비교 평가
     # 1. K-Means (K=3, 고정 난수 random_state=42)
     kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
-    df['Cluster'] = kmeans.fit_predict(scaled_features)
-    sil_kmeans = silhouette_score(scaled_features, df['Cluster'])
+    new_df['Cluster'] = kmeans.fit_predict(scaled_features)
+    sil_kmeans = silhouette_score(scaled_features, new_df['Cluster'])
     
-    # 2. DBSCAN (밀도 기반)
+    # 2. DBSCAN
     dbscan = DBSCAN(eps=0.15, min_samples=5)
     db_labels = dbscan.fit_predict(scaled_features)
     sil_dbscan = silhouette_score(scaled_features, db_labels) if len(set(db_labels)) > 1 else -1.0
@@ -67,7 +93,7 @@ def load_and_preprocess_data():
     agg_labels = agg.fit_predict(scaled_features)
     sil_agg = silhouette_score(scaled_features, agg_labels)
     
-    # 베이스라인 (K=1, 군집 없음) 대비 평가 표 작성
+    # 지표 비교 표 작성
     metrics_df = pd.DataFrame({
         "구분": ["베이스라인 (K=1)", "K-Means (선택)", "DBSCAN", "계층적 군집화"],
         "군집 수 (K)": [1, 3, len(set(db_labels)) - (1 if -1 in db_labels else 0), 3],
@@ -75,18 +101,18 @@ def load_and_preprocess_data():
         "평가": ["기준점 (분류 없음)", "최우수 (경계선 명확)", "비추천 (단일 뭉침)", "양호"]
     })
     
-    # 군집 이름 할당
-    cluster_centers = df.groupby('Cluster')['Sleep Duration'].mean().sort_values()
+    # 군집 이름 매핑
+    cluster_centers = new_df.groupby('Cluster')['Sleep Duration'].mean().sort_values()
     cluster_mapping = {
         cluster_centers.index[0]: '단수면 군집 (Cluster 0)',
         cluster_centers.index[1]: '중수면 군집 (Cluster 1)',
         cluster_centers.index[2]: '장수면 군집 (Cluster 2)'
     }
-    df['Cluster_Name'] = df['Cluster'].map(cluster_mapping)
+    new_df['Cluster_Name'] = new_df['Cluster'].map(cluster_mapping)
     
-    return df, sil_kmeans, metrics_df, kmeans, scaler
+    return new_df, sil_kmeans, metrics_df, kmeans, scaler
 
-# 3. 데이터 로드 및 UI 출력
+# 3. UI 렌더링
 try:
     df, sil_score, metrics_df, kmeans_model, scaler_model = load_and_preprocess_data()
 
@@ -98,7 +124,7 @@ try:
     # 3개 탭 구성
     tab1, tab2, tab3 = st.tabs(["📌 모델 비교 & 군집화 결과", "📈 스트레스 비교 그래프", "🔍 사례 추론 & 데이터 확인"])
 
-    # TAB 1: 후보 모델 비교 표 & 산점도 결과
+    # TAB 1: 후보 모델 지표 비교 표 & 산점도
     with tab1:
         st.subheader("1. 후보 모델 지표 비교 (베이스라인 vs 후보 모델 3종)")
         st.write("동일한 전처리(Min-Max Scale) 조건과 동일 변수(`Sleep Duration`, `Quality of Sleep`)에서 3개 후보 모델을 비교한 평가지표 표입니다.")
@@ -113,7 +139,7 @@ try:
         )
         st.plotly_chart(fig_cluster, use_container_width=True)
 
-    # TAB 2: 스트레스 비교 박스플롯 결과 그래프
+    # TAB 2: 스트레스 비교 그래프
     with tab2:
         st.subheader("3. 군집별 인지 피로도(스트레스 지수) 비교 분포")
         st.write("수면 패턴에 따라 분리된 3개 군집 간 스트레스 지수(`Stress Level`)의 차이를 검증합니다.")
@@ -123,20 +149,17 @@ try:
         )
         st.plotly_chart(fig_stress, use_container_width=True)
 
-    # TAB 3: 원본 데이터 확인 및 단일 사례 추론 과정
+    # TAB 3: 사례 추론 과정 및 원본 데이터
     with tab3:
         st.subheader("4. 우리 데이터의 한 사례로 고른 모델이 답을 내는 과정 (단일 사례 추론)")
         st.write("첫 번째 대상자(Sample ID #1)의 데이터가 K-Means 모델을 통해 군집으로 할당되는 수학적 계산 과정을 보여줍니다.")
         
-        # 사례 1번 추출
         sample_row = df.iloc[0]
         sample_features = np.array([[sample_row['Sleep Duration'], sample_row['Quality of Sleep']]])
         sample_scaled = scaler_model.transform(sample_features)
         
-        # 각 군집 중심점과의 거리 계산
         centers = kmeans_model.cluster_centers_
         distances = np.linalg.norm(centers - sample_scaled, axis=1)
-        predicted_cluster = np.argmin(distances)
         
         col1, col2 = st.columns(2)
         with col1:
